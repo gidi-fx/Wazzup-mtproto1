@@ -40,4 +40,4 @@ async def login(phone: str, code: str, password: str = ""):
 
     @app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
-    return {"ok": Truegideonboy}
+    return {"ok": True}
