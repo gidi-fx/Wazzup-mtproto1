@@ -36,8 +36,7 @@ async def login(phone: str, code: str, password: str = ""):
         return HTMLResponse(f"Error: {e}")
     session_str = client.session.save()
     await client.disconnect()
-    return f'<h2>COPY YOUR SESSION:</h2><textarea style="width:100%;height:200px">{session_str}</textarea><p>Copy this and add to Render ENV as SESSION</p>'
-
+    return f'<h2>COPY YOUR SESSION:</h2><textarea style="width:100%;height:200px">{session_str}</textarea><p>Copy this and add to Render ENV as SESSION</p> '
     @app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
     return {"ok": True}
