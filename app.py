@@ -1,4 +1,4 @@
- = import os
+import os
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from telethon import TelegramClient
