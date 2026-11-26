@@ -13,7 +13,6 @@ os.makedirs(DATA_DIR, exist_ok=True)
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 
-# Store temporary clients for login {phone: client}
 pending_clients = {}
 
 def session_path(phone):
@@ -36,7 +35,7 @@ HTML = """
 <title>Wazzup Login</title>
 <style>
 body{font-family:sans-serif;background:#111;color:#fff;padding:20px;max-width:480px;margin:auto}
-input,button{width:100%;padding:13px;margin:8px 0;border-radius:10px;border:none;font-size:15px}
+input,button,select{width:100%;padding:13px;margin:8px 0;border-radius:10px;border:none;font-size:15px}
 button{background:#2aabee;color:#fff;font-weight:bold;cursor:pointer}
 button:disabled{background:#555}
 .card{background:#222;padding:16px;border-radius:14px;margin:12px 0}
@@ -51,41 +50,46 @@ button:disabled{background:#555}
 <div class="card step active" id="step1">
 <h3>1. Connect Your Telegram</h3>
 <input id="phone" placeholder="+234... with country code">
+<select id="method">
+<option value="app">📱 Code to Telegram App (Fast)</option>
+<option value="call">📞 Call My Number</option>
+<option value="sms">💬 SMS</option>
+</select>
 <button onclick="sendCode()" id="btn1">Get Login Code</button>
-<p class="small">We will send code inside your Telegram app</p>
+<p class="small">App = code inside Telegram. Call = robot calls you read code. SMS = text message</p>
 <p id="msg1"></p>
 </div>
 
 <div class="card step" id="step2">
 <h3>2. Enter Code</h3>
-<input id="code" placeholder="12345">
-<input id="pass2fa" placeholder="2FA Password (if any) - leave empty if none">
+<input id="code" placeholder="Enter code you received">
+<input id="pass2fa" placeholder="2FA Password (if any)">
 <button onclick="verifyCode()" id="btn2">Verify & Login</button>
 <p id="msg2"></p>
 </div>
 
 <div class="card step" id="step3">
 <h3>✅ Connected as <span id="me"></span></h3>
-<p class="small" id="sessInfo"></p>
 <input id="to" placeholder="Test to: @username or +234...">
-<input id="text" placeholder="Message: Hi from Wazzup">
-<button onclick="sendDM()" id="btn3">Send via MTProto</button>
+<input id="text" placeholder="Message: Hello">
+<button onclick="sendDM()" id="btn3">Send Test DM via MTProto</button>
 <p id="msg3"></p>
-<button style="background:#333" onclick="logout()">Logout / Use another number</button>
+<button style="background:#333" onclick="location.reload()">Use another number</button>
 </div>
 
 <script>
 let currentPhone = "";
 async function sendCode(){
   let phone=document.getElementById('phone').value;
+  let method=document.getElementById('method').value;
   if(!phone){alert('Enter phone');return}
   document.getElementById('btn1').disabled=true;
-  document.getElementById('msg1').innerText='Sending...';
-  let r = await fetch('/login/send_code', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({phone})});
+  document.getElementById('msg1').innerText='Sending '+method+' code to '+phone+'...';
+  let r = await fetch('/login/send_code', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({phone, method})});
   let j = await r.json();
   document.getElementById('btn1').disabled=false;
-  document.getElementById('msg1').innerText=JSON.stringify(j);
-  document.getElementById('msg1').className = j.ok ? 'ok' : 'err';
+  document.getElementById('msg1').innerText=j.msg || JSON.stringify(j);
+  document.getElementById('msg1').className=j.ok?'ok':'err';
   if(j.ok){
     currentPhone=phone;
     document.getElementById('step1').classList.remove('active');
@@ -105,7 +109,6 @@ async function verifyCode(){
     document.getElementById('step2').classList.remove('active');
     document.getElementById('step3').classList.add('active');
     document.getElementById('me').innerText=j.user;
-    document.getElementById('sessInfo').innerText='Session: '+j.session_path;
   }
 }
 async function sendDM(){
@@ -116,9 +119,6 @@ async function sendDM(){
   let j = await r.json();
   document.getElementById('msg3').innerText=JSON.stringify(j);
   document.getElementById('msg3').className=j.ok?'ok':'err';
-}
-function logout(){
-  currentPhone=""; location.reload();
 }
 </script>
 </body>
@@ -133,24 +133,43 @@ async def home():
 async def send_code(request: Request):
     data = await request.json()
     phone = data.get("phone", "").strip()
+    method = data.get("method", "app")
     if not phone:
         return JSONResponse({"ok": False, "error": "Phone required"}, 400)
     try:
         client = get_saved_client(phone)
         await client.connect()
-        # If already authorized
+        
         if await client.is_user_authorized():
             with open(session_path(phone), "w") as f:
                 f.write(client.session.save())
             me = await client.get_me()
             await client.disconnect()
-            return {"ok": True, "already": True, "user": f"{me.first_name} @{me.username}"}
+            return {"ok": True, "already": True, "msg": f"Already logged in as {me.first_name}", "user": f"{me.first_name}"}
         
-        sent = await client.send_code_request(phone)
+        if method == "app":
+            sent = await client.send_code_request(phone)
+            msg = f"✅ Code sent to Telegram App. Open Telegram on another device!"
+        elif method == "sms":
+            sent = await client.send_code_request(phone, force_sms=True)
+            msg = f"✅ SMS sent to {phone}"
+        elif method == "call":
+            # First send app code, then request call on second attempt
+            sent = await client.send_code_request(phone)
+            try:
+                # Try to trigger call - second request often triggers call
+                sent = await client.send_code_request(phone)
+            except:
+                pass
+            msg = f"📞 Telegram will call {phone} in ~60 seconds if app code not used. Pick call for code."
+        else:
+            sent = await client.send_code_request(phone)
+            msg = "Code sent"
+
         pending_clients[phone] = client
-        return {"ok": True, "msg": "Code sent to Telegram", "phone_code_hash": sent.phone_code_hash}
+        return {"ok": True, "msg": msg, "method": method}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, 500)
+        return JSONResponse({"ok": False, "msg": str(e), "error": str(e)}, 500)
 
 @app.post("/login/verify")
 async def verify(request: Request):
@@ -167,20 +186,18 @@ async def verify(request: Request):
             await client.sign_in(phone=phone, code=code)
         except SessionPasswordNeededError:
             if not password:
-                return JSONResponse({"ok": False, "error": "2FA password required"}, 400)
+                return JSONResponse({"ok": False, "msg": "2FA password required, enter it"}, 400)
             await client.sign_in(password=password)
         
-        # Save session
         with open(session_path(phone), "w") as f:
             f.write(client.session.save())
         
         me = await client.get_me()
         pending_clients.pop(phone, None)
-        # keep client connected? disconnect to avoid leak
         await client.disconnect()
-        return {"ok": True, "user": f"{me.first_name} (@{me.username})", "session_path": session_path(phone)}
+        return {"ok": True, "user": f"{me.first_name} (@{me.username})", "msg": "Logged in!"}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, 500)
+        return JSONResponse({"ok": False, "msg": str(e), "error": str(e)}, 500)
 
 @app.post("/send")
 async def send_dm(request: Request):
@@ -189,21 +206,20 @@ async def send_dm(request: Request):
     to = data.get("to")
     message = data.get("message")
     if not phone or not to or not message:
-        return JSONResponse({"ok": False, "error": "phone, to, message required"}, 400)
+        return JSONResponse({"ok": False, "error": "All fields required"}, 400)
     try:
         client = get_saved_client(phone)
         await client.connect()
         if not await client.is_user_authorized():
-            return JSONResponse({"ok": False, "error": "Not logged in. Please login first"}, 401)
-        # Resolve entity to avoid GetContactsRequest bug
+            return JSONResponse({"ok": False, "error": "Not logged in"}, 401)
         entity = await client.get_entity(to)
         await client.send_message(entity, message)
         await client.disconnect()
-        return {"ok": True, "sentTo": to, "from": phone}
+        return {"ok": True, "msg": f"Sent to {to} via {phone}"}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, 500)
 
 @app.get("/health")
 async def health():
     files = os.listdir(DATA_DIR) if os.path.exists(DATA_DIR) else []
-    return {"status": "ok", "sessions": len(files), "files": files}
+    return {"status": "ok", "sessions": len(files)}
